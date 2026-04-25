@@ -1,0 +1,54 @@
+name: Hourly Job Alerts
+
+on:
+  schedule:
+    # Runs every hour at :00 — GitHub Actions uses UTC
+    # Tip: jobs posted 9am–6pm PST = 17:00–02:00 UTC  
+    - cron: '0 * * * *'
+
+  # Lets you trigger manually from the Actions tab in GitHub
+  workflow_dispatch:
+
+jobs:
+  fetch-jobs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to commit seen_jobs.json back
+
+    steps:
+      # ── 1. Checkout your repo ──────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── 2. Set up Python ───────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Install dependencies ────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. Run the job fetcher ─────────────────────────────
+      - name: Fetch jobs and send alerts
+        env:
+          TELEGRAM_BOT_TOKEN:  ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
+          GMAIL_USER:          ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_TO:            ${{ secrets.GMAIL_TO }}
+        run: python main.py
+
+      # ── 5. Commit updated seen_jobs.json ───────────────────
+      # This is the key step — persists dedup state across runs
+      - name: Commit seen_jobs.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_jobs.json
+          git diff --staged --quiet || git commit -m "chore: update seen_jobs [skip ci]"
+          git push
