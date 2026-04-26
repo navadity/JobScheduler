@@ -332,10 +332,15 @@ def fetch_linkedin(company: str, query: str, profile: dict) -> list[dict]:
 # EMAIL NOTIFICATIONS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _sanitize(text: str) -> str:
+    """Remove non-ASCII characters that break SMTP encoding."""
+    return text.encode("ascii", "ignore").decode("ascii").strip() if isinstance(text, str) else text
+
+
 def _build_html(jobs: list[dict], profile_label: str, subject_prefix: str = "New") -> str:
     rows = ""
     for j in jobs:
-        j = {k: v.replace('\xa0', ' ').strip() if isinstance(v, str) else v for k, v in j.items()}
+        j = {k: _sanitize(v) if isinstance(v, str) else v for k, v in j.items()}
         score_badge = ""
         if j.get("score") is not None:
             color = "#22c55e" if j["score"] >= 8 else "#f59e0b"
