@@ -1,36 +1,37 @@
 #!/usr/bin/env python3
 """
-Job Alert Bot  —  Multi-Profile Edition
-========================================
-Runs each PROFILE independently:
-  • product_manager  →  pmhritvik@gmail.com
-  • sde2             →  navadityagaur@gmail.com
+Job Alert Bot — Multi-Profile Edition (v2)
+==========================================
+Improvements over v1:
+  1. Retry logic       — 3-attempt exponential backoff on all fetchers
+  2. Gist storage      — seen_jobs.json persisted to GitHub Gist (survives git resets)
+  3. AI scoring        — Gemini free API scores each job 1-10; only 7+ gets notified
+  4. LinkedIn source   — 4th job source via LinkedIn RSS
+  5. Weekly digest     — Sunday summary; run with: python main.py --weekly-digest
 
-Each profile has its own roles, companies, and email destination.
-Deduplication is per-profile so a job won't be re-sent even if it
-shows up in multiple fetch cycles.
-
-Run locally:   python main.py
-GitHub Actions cron: .github/workflows/job_alerts.yml
+Run locally:  python main.py
+Weekly:       python main.py --weekly-digest
+GitHub cron:  .github/workflows/job_alerts.yml
 """
 
 import os
 import json
 import time
+import argparse
 import smtplib
 import logging
 import requests
 import feedparser
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import config
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    format="%(asctime)s %(levelname)-8s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger(__name__)
@@ -45,114 +46,104 @@ HEADERS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ROLE MATCHING  (per-profile)
+# 1. RETRY LOGIC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def fetch_with_retry(fetch_fn, *args, retries: int = 3, backoff: float = 2.0) -> list:
+    """
+    Calls fetch_fn(*args) up to `retries` times.
+    Waits backoff * attempt seconds between retries.
+    Returns empty list if all attempts fail.
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            return fetch_fn(*args)
+        except Exception as e:
+            if attempt == retries:
+                log.error(f"  All {retries} attempts failed for {fetch_fn.__name__}: {e}")
+                return []
+            wait = backoff * attempt
+            log.warning(f"  Attempt {attempt}/{retries} failed ({e}). Retrying in {wait}s…")
+            time.sleep(wait)
+    return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. GIST STORAGE — persists seen_jobs.json outside the repo
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _gist_headers() -> dict:
+    return {
+        "Authorization": f"token {config.GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+
+
+def load_seen() -> dict:
+    """Load seen store: { profile_name: [list of job IDs] }"""
+    if config.USE_GIST_STORAGE and config.GIST_ID and config.GITHUB_TOKEN:
+        try:
+            resp = requests.get(
+                f"https://api.github.com/gists/{config.GIST_ID}",
+                headers=_gist_headers(),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            content = resp.json()["files"].get("seen_jobs.json", {}).get("content", "{}")
+            data = json.loads(content)
+            log.info("Loaded seen_jobs from GitHub Gist.")
+            return data.get("profiles", {})
+        except Exception as e:
+            log.warning(f"Gist load failed ({e}), falling back to local file.")
+
+    # Fallback: local file
+    if not os.path.exists(config.SEEN_JOBS_FILE):
+        return {}
+    with open(config.SEEN_JOBS_FILE) as f:
+        return json.load(f).get("profiles", {})
+
+
+def save_seen(seen: dict) -> None:
+    """Persist seen store, trimming each profile to MAX_SEEN_JOBS."""
+    trimmed = {k: v[-config.MAX_SEEN_JOBS:] for k, v in seen.items()}
+    payload = {
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "profiles": trimmed,
+    }
+    total = sum(len(v) for v in trimmed.values())
+
+    if config.USE_GIST_STORAGE and config.GIST_ID and config.GITHUB_TOKEN:
+        try:
+            resp = requests.patch(
+                f"https://api.github.com/gists/{config.GIST_ID}",
+                headers=_gist_headers(),
+                json={"files": {"seen_jobs.json": {"content": json.dumps(payload, indent=2)}}},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            log.info(f"Saved {total} seen IDs → GitHub Gist.")
+            return
+        except Exception as e:
+            log.warning(f"Gist save failed ({e}), falling back to local file.")
+
+    # Fallback: local file
+    with open(config.SEEN_JOBS_FILE, "w") as f:
+        json.dump(payload, f, indent=2)
+    log.info(f"Saved {total} seen IDs → {config.SEEN_JOBS_FILE}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROLE + LOCATION MATCHING
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def matches_role(title: str, profile: dict) -> bool:
-    """Return True if title matches a target role and none of the exclude keywords."""
     t = title.lower()
     if any(kw.lower() in t for kw in profile["exclude_keywords"]):
         return False
     return any(role.lower() in t for role in profile["target_roles"])
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  FETCHERS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def fetch_indeed(company: str, query: str, profile: dict) -> list[dict]:
-    url = (
-        f"https://www.indeed.com/rss"
-        f"?q={query}"
-        f"&l={config.LOCATION_INDEED}"
-        f"&sort=date"
-        f"&fromage={config.JOBS_AGE_DAYS}"
-    )
-    jobs = []
-    try:
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
-            title = entry.get("title", "")
-            if not matches_role(title, profile):
-                continue
-            jobs.append({
-                "id":       entry.get("id") or entry.get("link"),
-                "title":    title,
-                "company":  company,
-                "location": entry.get("location", config.LOCATION),
-                "url":      entry.get("link", ""),
-                "source":   "Indeed",
-                "posted":   entry.get("published", ""),
-            })
-        log.info(f"  Indeed     | {company:<22} | {len(jobs):>3} matched")
-    except Exception as e:
-        log.warning(f"  Indeed     | {company:<22} | ERROR: {e}")
-    return jobs
-
-
-def fetch_greenhouse(company: str, slug: str, profile: dict) -> list[dict]:
-    url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
-    jobs = []
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        for job in resp.json().get("jobs", []):
-            title = job.get("title", "")
-            if not matches_role(title, profile):
-                continue
-            location = job.get("location", {}).get("name", "")
-            if not _loc_ok(location):
-                continue
-            jobs.append({
-                "id":       str(job.get("id")),
-                "title":    title,
-                "company":  company,
-                "location": location or config.LOCATION,
-                "url":      job.get("absolute_url", ""),
-                "source":   "Greenhouse",
-                "posted":   job.get("updated_at", "")[:10],
-            })
-        log.info(f"  Greenhouse | {company:<22} | {len(jobs):>3} matched")
-    except Exception as e:
-        log.warning(f"  Greenhouse | {company:<22} | ERROR: {e}")
-    return jobs
-
-
-def fetch_lever(company: str, slug: str, profile: dict) -> list[dict]:
-    url = f"https://api.lever.co/v0/postings/{slug}?mode=json&limit=200"
-    jobs = []
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        for job in resp.json():
-            title = job.get("text", "")
-            if not matches_role(title, profile):
-                continue
-            location = job.get("categories", {}).get("location", "")
-            if not _loc_ok(location):
-                continue
-            ts = job.get("createdAt", 0)
-            posted = (
-                datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-                if ts else ""
-            )
-            jobs.append({
-                "id":       job.get("id", ""),
-                "title":    title,
-                "company":  company,
-                "location": location or config.LOCATION,
-                "url":      job.get("hostedUrl", ""),
-                "source":   "Lever",
-                "posted":   posted,
-            })
-        log.info(f"  Lever      | {company:<22} | {len(jobs):>3} matched")
-    except Exception as e:
-        log.warning(f"  Lever      | {company:<22} | ERROR: {e}")
-    return jobs
-
-
 def _loc_ok(location: str) -> bool:
-    """Accept if location is blank, matches config.LOCATION, or is Remote."""
     if not location:
         return True
     loc = location.lower()
@@ -164,106 +155,249 @@ def _loc_ok(location: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  DEDUP STORE  —  keyed by profile name so profiles don't share state
+# 3. AI SCORING — Gemini free API
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_seen() -> dict:
-    """Load full seen store: { profile_name: [list of job IDs] }"""
-    path = config.SEEN_JOBS_FILE
-    if not os.path.exists(path):
-        return {}
-    with open(path) as f:
-        return json.load(f).get("profiles", {})
+def score_job(job: dict, profile: dict) -> int:
+    """
+    Scores a job 1-10 using Gemini 1.5 Flash (free tier).
+    Returns 10 (pass-through) if AI scoring is disabled or API key missing.
+    Returns 10 on API error so jobs are never silently dropped.
+    """
+    if not config.AI_SCORING_ENABLED or not config.GEMINI_API_KEY:
+        return 10
 
+    prompt = f"""You are a job fit scorer. Score this job 1-10 for this candidate.
 
-def save_seen(seen: dict) -> None:
-    """Persist seen store, trimming each profile to MAX_SEEN_JOBS."""
-    trimmed = {
-        k: v[-config.MAX_SEEN_JOBS:] for k, v in seen.items()
-    }
-    with open(config.SEEN_JOBS_FILE, "w") as f:
-        json.dump(
-            {
-                "last_updated": datetime.now(timezone.utc).isoformat(),
-                "profiles": trimmed,
-            },
-            f,
-            indent=2,
+Candidate profile:
+{profile.get('resume_summary', '')}
+
+Job:
+Title: {job['title']}
+Company: {job['company']}
+Location: {job['location']}
+
+Scoring guide:
+9-10 = Perfect match (title + seniority + domain all align)
+7-8  = Strong match (title matches, minor differences)
+5-6  = Partial match (related role but not ideal)
+1-4  = Poor match (wrong level, domain, or role type)
+
+Reply with ONLY a single integer between 1 and 10. No explanation."""
+
+    try:
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={config.GEMINI_API_KEY}",
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=10,
         )
-    total = sum(len(v) for v in trimmed.values())
-    log.info(f"Saved {total} total seen job IDs → {config.SEEN_JOBS_FILE}")
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        score = int("".join(filter(str.isdigit, text[:3])))
+        return min(max(score, 1), 10)
+    except Exception as e:
+        log.warning(f"  Gemini scoring failed for '{job['title']}': {e} — passing through")
+        return 10
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  EMAIL NOTIFICATIONS
+# FETCHERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _build_html(jobs: list[dict], profile_label: str) -> str:
+def fetch_indeed(company: str, query: str, profile: dict) -> list[dict]:
+    url = (
+        f"https://www.indeed.com/rss"
+        f"?q={query}"
+        f"&l={config.LOCATION_INDEED}"
+        f"&sort=date"
+        f"&fromage={config.JOBS_AGE_DAYS}"
+    )
+    jobs = []
+    feed = feedparser.parse(url)
+    for entry in feed.entries:
+        title = entry.get("title", "")
+        if not matches_role(title, profile):
+            continue
+        jobs.append({
+            "id": entry.get("id") or entry.get("link"),
+            "title": title,
+            "company": company,
+            "location": entry.get("location", config.LOCATION),
+            "url": entry.get("link", ""),
+            "source": "Indeed",
+            "posted": entry.get("published", ""),
+            "score": None,
+        })
+    log.info(f"  Indeed     | {company:<25} | {len(jobs):>3} matched")
+    return jobs
+
+
+def fetch_greenhouse(company: str, slug: str, profile: dict) -> list[dict]:
+    url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+    jobs = []
+    for job in resp.json().get("jobs", []):
+        title = job.get("title", "")
+        if not matches_role(title, profile):
+            continue
+        location = job.get("location", {}).get("name", "")
+        if not _loc_ok(location):
+            continue
+        jobs.append({
+            "id": str(job.get("id")),
+            "title": title,
+            "company": company,
+            "location": location or config.LOCATION,
+            "url": job.get("absolute_url", ""),
+            "source": "Greenhouse",
+            "posted": job.get("updated_at", "")[:10],
+            "score": None,
+        })
+    log.info(f"  Greenhouse | {company:<25} | {len(jobs):>3} matched")
+    return jobs
+
+
+def fetch_lever(company: str, slug: str, profile: dict) -> list[dict]:
+    url = f"https://api.lever.co/v0/postings/{slug}?mode=json&limit=200"
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+    jobs = []
+    for job in resp.json():
+        title = job.get("text", "")
+        if not matches_role(title, profile):
+            continue
+        location = job.get("categories", {}).get("location", "")
+        if not _loc_ok(location):
+            continue
+        ts = job.get("createdAt", 0)
+        posted = (
+            datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            if ts else ""
+        )
+        jobs.append({
+            "id": job.get("id", ""),
+            "title": title,
+            "company": company,
+            "location": location or config.LOCATION,
+            "url": job.get("hostedUrl", ""),
+            "source": "Lever",
+            "posted": posted,
+            "score": None,
+        })
+    log.info(f"  Lever      | {company:<25} | {len(jobs):>3} matched")
+    return jobs
+
+
+# ── 4. LinkedIn RSS fetcher ───────────────────────────────────────────────────
+
+def fetch_linkedin(company: str, query: str, profile: dict) -> list[dict]:
+    """
+    Fetches LinkedIn jobs via their public RSS feed.
+    f_TPR=r86400 = posted in last 24 hours.
+    """
+    encoded_location = config.LOCATION.replace(", ", "%2C+").replace(" ", "+")
+    url = (
+        f"https://www.linkedin.com/jobs/search/?keywords={query}"
+        f"&location={encoded_location}"
+        f"&f_TPR=r86400"
+        f"&sortBy=DD"
+        f"&format=rss"
+    )
+    jobs = []
+    try:
+        feed = feedparser.parse(url)
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            if not matches_role(title, profile):
+                continue
+            jobs.append({
+                "id": entry.get("id") or entry.get("link"),
+                "title": title,
+                "company": company,
+                "location": entry.get("urn_li_jobPosting_location", config.LOCATION),
+                "url": entry.get("link", ""),
+                "source": "LinkedIn",
+                "posted": entry.get("published", ""),
+                "score": None,
+            })
+        log.info(f"  LinkedIn   | {company:<25} | {len(jobs):>3} matched")
+    except Exception as e:
+        log.warning(f"  LinkedIn   | {company:<25} | ERROR: {e}")
+    time.sleep(1.0)   # LinkedIn is rate-sensitive
+    return jobs
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EMAIL NOTIFICATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _build_html(jobs: list[dict], profile_label: str, subject_prefix: str = "New") -> str:
     rows = ""
     for j in jobs:
+        score_badge = ""
+        if j.get("score") is not None:
+            color = "#22c55e" if j["score"] >= 8 else "#f59e0b"
+            score_badge = f'<span style="background:{color};color:#fff;border-radius:4px;padding:1px 6px;font-size:11px;margin-left:6px;">{j["score"]}/10</span>'
         rows += f"""
         <tr>
           <td style="padding:10px 8px;border-bottom:1px solid #eee;">
             <a href="{j['url']}" style="font-weight:600;color:#0066cc;text-decoration:none;">
               {j['title']}
-            </a><br>
+            </a>{score_badge}<br>
             <span style="color:#555;font-size:13px;">{j['company']} &nbsp;·&nbsp; {j['location']}</span>
           </td>
           <td style="padding:10px 8px;border-bottom:1px solid #eee;font-size:12px;color:#888;white-space:nowrap;">
             {j['source']}
           </td>
           <td style="padding:10px 8px;border-bottom:1px solid #eee;font-size:12px;color:#888;white-space:nowrap;">
-            {j.get('posted','')[:10]}
+            {str(j.get('posted',''))[:10]}
           </td>
         </tr>"""
 
-    run_time = datetime.now(timezone.utc).strftime("%b %d, %Y  %H:%M UTC")
+    run_time = datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC")
     return f"""
-    <html><body style="font-family:Arial,sans-serif;color:#222;margin:0;padding:20px;">
-      <h2 style="color:#1a1a2e;margin-bottom:4px;">
-        🚀 {len(jobs)} new <span style="color:#0066cc;">{profile_label}</span>
-        job{'s' if len(jobs)!=1 else ''}
-      </h2>
-      <p style="color:#888;font-size:13px;margin-top:0;">
-        Fetched: {run_time} &nbsp;·&nbsp; Location: {config.LOCATION}
-      </p>
-      <table style="width:100%;border-collapse:collapse;margin-top:16px;">
-        <thead>
-          <tr style="background:#f5f5f5;">
-            <th style="padding:10px 8px;text-align:left;font-size:13px;color:#555;">Role &amp; Company</th>
-            <th style="padding:10px 8px;text-align:left;font-size:13px;color:#555;">Source</th>
-            <th style="padding:10px 8px;text-align:left;font-size:13px;color:#555;">Posted</th>
-          </tr>
-        </thead>
-        <tbody>{rows}</tbody>
-      </table>
-      <p style="color:#aaa;font-size:11px;margin-top:20px;">Job Alert Bot · Automated</p>
-    </body></html>
-    """
+<html><body style="font-family:Arial,sans-serif;color:#222;margin:0;padding:20px;">
+  <h2 style="color:#1a1a2e;margin-bottom:4px;">
+    🚀 {len(jobs)} {subject_prefix} <span style="color:#0066cc;">{profile_label}</span>
+    job{'s' if len(jobs) != 1 else ''}
+  </h2>
+  <p style="color:#888;font-size:13px;margin-top:0;">
+    {run_time} &nbsp;·&nbsp; {config.LOCATION}
+    {"&nbsp;·&nbsp; AI scored ≥ " + str(config.AI_SCORE_THRESHOLD) + "/10" if config.AI_SCORING_ENABLED else ""}
+  </p>
+  <table style="width:100%;border-collapse:collapse;margin-top:16px;">
+    <thead>
+      <tr style="background:#f5f5f5;">
+        <th style="padding:10px 8px;text-align:left;font-size:13px;color:#555;">Role &amp; Company</th>
+        <th style="padding:10px 8px;text-align:left;font-size:13px;color:#555;">Source</th>
+        <th style="padding:10px 8px;text-align:left;font-size:13px;color:#555;">Posted</th>
+      </tr>
+    </thead>
+    <tbody>{rows}</tbody>
+  </table>
+  <p style="color:#aaa;font-size:11px;margin-top:20px;">Job Alert Bot v2 · Automated</p>
+</body></html>"""
 
 
-def send_email(jobs: list[dict], to_addr: str, profile_label: str) -> None:
-    """Send a styled HTML digest to the profile's destination email."""
+def send_email(jobs: list[dict], to_addr: str, profile_label: str, subject_prefix: str = "New") -> None:
     user     = os.environ.get("GMAIL_USER")
     password = os.environ.get("GMAIL_APP_PASSWORD")
-
     if not user or not password:
         log.warning("Gmail: GMAIL_USER or GMAIL_APP_PASSWORD not set — skipping.")
         return
 
     subject = (
         f"[Job Alert | {profile_label}] "
-        f"{len(jobs)} new role{'s' if len(jobs)!=1 else ''} in {config.LOCATION}"
+        f"{len(jobs)} {subject_prefix.lower()} role{'s' if len(jobs) != 1 else ''} in {config.LOCATION}"
     )
-
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = user
     msg["To"]      = to_addr
-
     plain = "\n".join(f"• {j['title']} @ {j['company']} — {j['url']}" for j in jobs)
     msg.attach(MIMEText(plain, "plain"))
-    msg.attach(MIMEText(_build_html(jobs, profile_label), "html"))
+    msg.attach(MIMEText(_build_html(jobs, profile_label, subject_prefix), "html"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
@@ -271,11 +405,10 @@ def send_email(jobs: list[dict], to_addr: str, profile_label: str) -> None:
             srv.sendmail(user, to_addr, msg.as_string())
         log.info(f"  Email sent → {to_addr}")
     except Exception as e:
-        log.error(f"  Gmail failed → {to_addr} : {e}")
+        log.error(f"  Gmail failed → {to_addr}: {e}")
 
 
 def send_telegram(jobs: list[dict], profile_label: str) -> None:
-    """Send Telegram message for a profile's new jobs."""
     token   = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -283,14 +416,19 @@ def send_telegram(jobs: list[dict], profile_label: str) -> None:
         return
 
     base_url = f"https://api.telegram.org/bot{token}/sendMessage"
-    header   = f"🚀 *{len(jobs)} new {profile_label} job{'s' if len(jobs)!=1 else ''}* in {config.LOCATION}\n\n"
-    chunks   = [jobs[i:i+10] for i in range(0, len(jobs), 10)]
+    score_note = " _(AI scored ≥ 7/10)_" if config.AI_SCORING_ENABLED else ""
+    header = f"🚀 *{len(jobs)} new {profile_label} job{'s' if len(jobs) != 1 else ''}*{score_note} in {config.LOCATION}\n\n"
+    chunks = [jobs[i:i+10] for i in range(0, len(jobs), 10)]
 
     for idx, chunk in enumerate(chunks):
-        lines = [
-            f"*{j['title']}*\n🏢 {j['company']}  📍 {j['location']}\n🔗 [Apply →]({j['url']})"
-            for j in chunk
-        ]
+        lines = []
+        for j in chunk:
+            score_str = f" · Score: {j['score']}/10" if j.get("score") else ""
+            lines.append(
+                f"*{j['title']}*{score_str}\n"
+                f"🏢 {j['company']} 📍 {j['location']}\n"
+                f"🔗 [Apply →]({j['url']})"
+            )
         body = (header if idx == 0 else f"_(part {idx+1}/{len(chunks)})_\n\n") + "\n\n".join(lines)
         try:
             resp = requests.post(
@@ -307,32 +445,69 @@ def send_telegram(jobs: list[dict], profile_label: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN — runs every profile in sequence
+# 5. WEEKLY DIGEST
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def send_weekly_digest(profile_name: str, profile: dict, seen_store: dict) -> None:
+    """
+    Sends a Sunday summary of all jobs seen in the past 7 days.
+    seen_store entries need a 'seen_date' field (added in v2).
+    """
+    log.info(f"  Generating weekly digest for {profile['label']}…")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    profile_seen = seen_store.get(profile_name, {})
+
+    # Support both old format (list of IDs) and new format (list of dicts)
+    if isinstance(profile_seen, list):
+        log.info("  No enriched job data available yet — run hourly bot first.")
+        return
+
+    recent_jobs = [
+        j for j in profile_seen.values()
+        if isinstance(j, dict) and
+        datetime.fromisoformat(j.get("seen_date", "2000-01-01")).replace(tzinfo=timezone.utc) >= cutoff
+    ]
+
+    if not recent_jobs:
+        log.info(f"  No jobs in past 7 days for {profile['label']}.")
+        return
+
+    if config.NOTIFY_GMAIL:
+        send_email(recent_jobs, profile["notify_email"], profile["label"], subject_prefix="Weekly digest —")
+    log.info(f"  Weekly digest sent: {len(recent_jobs)} jobs.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN PROFILE RUNNER
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_profile(profile_name: str, profile: dict, seen_for_profile: set) -> set:
-    """Fetch, filter, notify and return updated seen set for one profile."""
     label     = profile["label"]
     companies = profile["companies"]
-
     log.info(f"  Fetching {len(companies)} companies…")
 
     all_jobs: list[dict] = []
     for company, cfg in companies.items():
         try:
             if cfg["type"] == "indeed":
-                all_jobs.extend(fetch_indeed(company, cfg["query"], profile))
+                jobs = fetch_with_retry(fetch_indeed, company, cfg["query"], profile)
             elif cfg["type"] == "greenhouse":
-                all_jobs.extend(fetch_greenhouse(company, cfg["slug"], profile))
+                jobs = fetch_with_retry(fetch_greenhouse, company, cfg["slug"], profile)
             elif cfg["type"] == "lever":
-                all_jobs.extend(fetch_lever(company, cfg["slug"], profile))
+                jobs = fetch_with_retry(fetch_lever, company, cfg["slug"], profile)
+            elif cfg["type"] == "linkedin":
+                jobs = fetch_with_retry(fetch_linkedin, company, cfg["query"], profile)
+            else:
+                log.warning(f"  Unknown type '{cfg['type']}' for {company}")
+                jobs = []
+            all_jobs.extend(jobs)
         except Exception as e:
             log.error(f"  Unhandled error [{company}]: {e}")
         time.sleep(0.3)
 
     log.info(f"  Total fetched: {len(all_jobs)}")
 
-    # Filter new and deduplicate within this run
+    # Dedup
     seen_this_run: set[str] = set()
     new_jobs: list[dict] = []
     for j in all_jobs:
@@ -342,9 +517,21 @@ def run_profile(profile_name: str, profile: dict, seen_for_profile: set) -> set:
 
     log.info(f"  New (not seen before): {len(new_jobs)}")
 
+    # AI scoring
+    if config.AI_SCORING_ENABLED and config.GEMINI_API_KEY and new_jobs:
+        log.info(f"  Scoring {len(new_jobs)} jobs with Gemini…")
+        scored = []
+        for j in new_jobs:
+            j["score"] = score_job(j, profile)
+            log.info(f"    {j['score']}/10 — {j['title']} @ {j['company']}")
+            time.sleep(0.2)   # gentle rate limiting
+        new_jobs = [j for j in new_jobs if j["score"] >= config.AI_SCORE_THRESHOLD]
+        log.info(f"  After AI filter (≥{config.AI_SCORE_THRESHOLD}): {len(new_jobs)} jobs")
+
+    # Cap
     if len(new_jobs) > config.MAX_JOBS_PER_RUN:
         log.info(f"  Capping to {config.MAX_JOBS_PER_RUN}")
-        new_jobs = new_jobs[: config.MAX_JOBS_PER_RUN]
+        new_jobs = new_jobs[:config.MAX_JOBS_PER_RUN]
 
     # Notify
     if new_jobs:
@@ -355,22 +542,42 @@ def run_profile(profile_name: str, profile: dict, seen_for_profile: set) -> set:
     elif config.SEND_EMPTY_DIGEST and config.NOTIFY_GMAIL:
         send_email([], profile["notify_email"], label)
 
-    # Update seen set with ALL jobs fetched this run (not just new ones)
+    # Update seen
     for j in all_jobs:
         seen_for_profile.add(j["id"])
 
     return seen_for_profile
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weekly-digest", action="store_true",
+                        help="Send weekly summary instead of hourly alerts")
+    args = parser.parse_args()
+
     log.info("=" * 62)
-    log.info(f"Job Alert Bot  —  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    log.info(f"Location: {config.LOCATION}  |  Remote OK: {config.REMOTE_OK}")
-    log.info(f"Active profiles: {[k for k,v in config.PROFILES.items() if v.get('active')]}")
+    log.info(f"Job Alert Bot v2 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    log.info(f"Location: {config.LOCATION} | Remote OK: {config.REMOTE_OK}")
+    log.info(f"AI Scoring: {'ON (threshold=' + str(config.AI_SCORE_THRESHOLD) + '/10)' if config.AI_SCORING_ENABLED else 'OFF'}")
+    log.info(f"Storage: {'GitHub Gist' if config.USE_GIST_STORAGE and config.GIST_ID else 'Local file'}")
+    log.info(f"Active profiles: {[k for k, v in config.PROFILES.items() if v.get('active')]}")
     log.info("=" * 62)
 
-    # Load seen store (dict keyed by profile name)
     seen_store = load_seen()
+
+    if args.weekly_digest:
+        for profile_name, profile in config.PROFILES.items():
+            if not profile.get("active", True):
+                continue
+            log.info(f"\n{'─'*50}")
+            log.info(f"WEEKLY DIGEST: {profile['label']}")
+            log.info(f"{'─'*50}")
+            send_weekly_digest(profile_name, profile, seen_store)
+        return
 
     for profile_name, profile in config.PROFILES.items():
         if not profile.get("active", True):
@@ -378,7 +585,7 @@ def main() -> None:
             continue
 
         log.info(f"\n{'─'*50}")
-        log.info(f"PROFILE: {profile['label']}  →  {profile['notify_email']}")
+        log.info(f"PROFILE: {profile['label']} → {profile['notify_email']}")
         log.info(f"{'─'*50}")
 
         seen_ids = set(seen_store.get(profile_name, []))
@@ -387,7 +594,6 @@ def main() -> None:
         updated_seen = run_profile(profile_name, profile, seen_ids)
         seen_store[profile_name] = list(updated_seen)
 
-    # Persist updated seen store
     save_seen(seen_store)
     log.info("\nAll profiles done.")
 

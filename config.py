@@ -1,234 +1,145 @@
-# ============================================================
-#  JOB ALERT CONFIG  —  Edit everything in this file
-# ============================================================
-#
-#  HOW PROFILES WORK
-#  ─────────────────
-#  Each entry in PROFILES is an independent alert pipeline:
-#    - Its own target roles & exclude keywords
-#    - Its own company list (with ATS type + slug/query)
-#    - Its own destination email (and optional Telegram chat)
-#
-#  Add as many profiles as you want. Each runs separately and
-#  sends alerts only to the right person.
-# ============================================================
+"""
+config.py — All customization lives here.
+==========================================
+Profiles, companies, roles, notification settings.
+"""
 
+import os
+
+# ── Location ──────────────────────────────────────────────────────────────────
+LOCATION        = "Seattle, WA"
+LOCATION_INDEED = "Seattle%2C+WA"
+REMOTE_OK       = True
+JOBS_AGE_DAYS   = 3
+
+# ── Dedup / Storage ───────────────────────────────────────────────────────────
+SEEN_JOBS_FILE  = "seen_jobs.json"
+MAX_SEEN_JOBS   = 5000      # per profile, older IDs are trimmed
+MAX_JOBS_PER_RUN = 50       # cap alerts per run to avoid spam
+
+# Use GitHub Gist for persistent dedup storage (survives git resets)
+USE_GIST_STORAGE = True
+GIST_ID          = os.environ.get("GIST_ID", "")          # GitHub Secret
+GITHUB_TOKEN     = os.environ.get("GITHUB_TOKEN", "")     # GitHub Secret
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+NOTIFY_GMAIL     = True
+NOTIFY_TELEGRAM  = True
+SEND_EMPTY_DIGEST = False   # set True to get "no new jobs" emails
+
+# ── AI Scoring (Gemini free tier) ─────────────────────────────────────────────
+AI_SCORING_ENABLED  = True
+AI_SCORE_THRESHOLD  = 7     # only notify jobs scoring >= this (out of 10)
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")  # GitHub Secret
+
+# ── Profiles ──────────────────────────────────────────────────────────────────
 PROFILES = {
 
-    # ══════════════════════════════════════════════════════════
-    #  PROFILE 1 — Product Manager
-    # ══════════════════════════════════════════════════════════
     "product_manager": {
-
-        "label": "Product Manager",          # Used in email subject lines
-        "active": True,                      # Set False to pause this profile
-
-        # ── Roles to match (case-insensitive substring match on job title)
+        "active": True,
+        "label": "Senior PM",
+        "notify_email": "pmhritvik@gmail.com",
+        "resume_summary": (
+            "7+ years founder experience across EdTech, PropTech, Biotech. "
+            "MS Information Management (AI & PM) University of Washington 2026. "
+            "Shipped 20+ features, led teams of 12-20, drove 19% conversion lifts. "
+            "Targeting Senior PM / Group PM roles at FAANG in Seattle."
+        ),
         "target_roles": [
             "Senior Product Manager",
-            "Sr. Product Manager",
-            "Sr Product Manager",
-            "Principal Product Manager",
+            "Senior PM",
             "Group Product Manager",
-            "Director of Product",
-            "Director, Product",
-            "Head of Product",
-            "Staff Product Manager",
+            "Group PM",
+            "Principal Product Manager",
+            "Principal PM",
             "Product Lead",
+            "Director of Product",
         ],
-
-        # ── Job titles containing any of these are skipped
         "exclude_keywords": [
-            "intern",
-            "internship",
-            "junior",
-            "associate product manager",
-            "APM",
-            "entry level",
-            "contract",
+            "intern", "internship", "junior", "associate pm",
+            "marketing", "growth hacker", "sales",
         ],
-
-        # ── Where alerts go for this profile
-        "notify_email": "pmhritvik@gmail.com",
-
-        # ── Companies to watch
         "companies": {
-
-            # BIG TECH — use Indeed RSS (they have their own ATS)
-            "Amazon / AWS": {
-                "type": "indeed",
-                "query": "amazon+senior+product+manager",
-            },
-            "Microsoft": {
-                "type": "indeed",
-                "query": "microsoft+senior+product+manager",
-            },
-            "Google": {
-                "type": "indeed",
-                "query": "google+senior+product+manager",
-            },
-            "Meta": {
-                "type": "indeed",
-                "query": "meta+facebook+senior+product+manager",
-            },
-            "Apple": {
-                "type": "indeed",
-                "query": "apple+senior+product+manager",
-            },
-            "LinkedIn": {
-                "type": "indeed",
-                "query": "linkedin+senior+product+manager",
-            },
-
-            # GREENHOUSE ATS
-            "Airbnb":      {"type": "greenhouse", "slug": "airbnb"},
-            "Stripe":      {"type": "greenhouse", "slug": "stripe"},
-            "Lyft":        {"type": "greenhouse", "slug": "lyft"},
-            "Shopify":     {"type": "greenhouse", "slug": "shopify"},
-            "Figma":       {"type": "greenhouse", "slug": "figma"},
-            "Notion":      {"type": "greenhouse", "slug": "notion"},
-            "Discord":     {"type": "greenhouse", "slug": "discord"},
-            "Coinbase":    {"type": "greenhouse", "slug": "coinbase"},
-            "DoorDash":    {"type": "greenhouse", "slug": "doordash"},
-            "Databricks":  {"type": "greenhouse", "slug": "databricks"},
-            "Snowflake":   {"type": "greenhouse", "slug": "snowflake"},
-            "Salesforce":  {"type": "greenhouse", "slug": "salesforce"},
-            "Atlassian":   {"type": "greenhouse", "slug": "atlassian"},
-            "Dropbox":     {"type": "greenhouse", "slug": "dropbox"},
-
-            # LEVER ATS
-            "Netflix":   {"type": "lever", "slug": "netflix"},
-            "Uber":      {"type": "lever", "slug": "uber"},
-            "Zillow":    {"type": "lever", "slug": "zillow"},
-            "Expedia":   {"type": "lever", "slug": "expedia"},
-            "Palantir":  {"type": "lever", "slug": "palantir"},
+            # ── Greenhouse ───────────────────────────────────────────────────
+            "Airbnb":       {"type": "greenhouse", "slug": "airbnb"},
+            "Figma":        {"type": "greenhouse", "slug": "figma"},
+            "Coinbase":     {"type": "greenhouse", "slug": "coinbase"},
+            "Robinhood":    {"type": "greenhouse", "slug": "robinhood"},
+            "Stripe":       {"type": "greenhouse", "slug": "stripe"},
+            "DoorDash":     {"type": "greenhouse", "slug": "doordash"},
+            "Notion":       {"type": "greenhouse", "slug": "notion"},
+            "Dropbox":      {"type": "greenhouse", "slug": "dropbox"},
+            "Pinterest":    {"type": "greenhouse", "slug": "pinterest"},
+            "Lyft":         {"type": "greenhouse", "slug": "lyft"},
+            "Twilio":       {"type": "greenhouse", "slug": "twilio"},
+            "Cloudflare":   {"type": "greenhouse", "slug": "cloudflare"},
+            "Datadog":      {"type": "greenhouse", "slug": "datadog"},
+            "HashiCorp":    {"type": "greenhouse", "slug": "hashicorp"},
+            # ── Lever ────────────────────────────────────────────────────────
+            "Waymo":        {"type": "lever", "slug": "waymo"},
+            "Rippling":     {"type": "lever", "slug": "rippling"},
+            "Scale AI":     {"type": "lever", "slug": "scaleai"},
+            "Anduril":      {"type": "lever", "slug": "anduril"},
+            # ── Indeed fallback ──────────────────────────────────────────────
+            "Amazon":       {"type": "indeed", "query": "amazon+senior+product+manager"},
+            "Microsoft":    {"type": "indeed", "query": "microsoft+senior+product+manager"},
+            "Google":       {"type": "indeed", "query": "google+senior+product+manager"},
+            "Meta":         {"type": "indeed", "query": "meta+senior+product+manager"},
+            "Apple":        {"type": "indeed", "query": "apple+senior+product+manager"},
+            "Netflix":      {"type": "indeed", "query": "netflix+senior+product+manager"},
+            "Uber":         {"type": "indeed", "query": "uber+senior+product+manager"},
+            "Zillow":       {"type": "indeed", "query": "zillow+product+manager"},
+            "Twitch":       {"type": "indeed", "query": "twitch+amazon+product+manager"},
+            # ── LinkedIn ─────────────────────────────────────────────────────
+            "Amazon (LinkedIn)":   {"type": "linkedin", "query": "Amazon+Senior+Product+Manager"},
+            "Microsoft (LinkedIn)":{"type": "linkedin", "query": "Microsoft+Senior+Product+Manager"},
+            "Apple (LinkedIn)":    {"type": "linkedin", "query": "Apple+Senior+Product+Manager"},
         },
     },
 
-    # ══════════════════════════════════════════════════════════
-    #  PROFILE 2 — SDE 2 / Software Engineer II
-    # ══════════════════════════════════════════════════════════
     "sde2": {
-
-        "label": "SDE 2",
         "active": True,
-
-        # ── Roles to match
-        "target_roles": [
-            "Software Development Engineer II",
-            "Software Development Engineer 2",
-            "SDE II",
-            "SDE 2",
-            "Software Engineer II",
-            "Software Engineer 2",
-            "SWE II",
-            "SWE 2",
-            "Software Engineer, L4",
-            "Software Engineer L4",
-            "Software Engineer (L4)",
-            "Senior Software Engineer",
-            "Sr. Software Engineer",
-            "Sr Software Engineer",
-            "Backend Engineer II",
-            "Frontend Engineer II",
-            "Full Stack Engineer II",
-        ],
-
-        # ── Job titles containing any of these are skipped
-        "exclude_keywords": [
-            "intern",
-            "internship",
-            "principal",
-            "staff",
-            "senior staff",
-            "distinguished",
-            "director",
-            "manager",
-            "L5", "L6",
-            "SDE III", "SDE 3",
-            "Software Engineer III",
-            "Software Engineer 3",
-            "entry level",
-            "new grad",
-            "university",
-            "contract",
-        ],
-
-        # ── Where alerts go for this profile
+        "label": "SDE-2",
         "notify_email": "navadityagaur@gmail.com",
-
-        # ── Companies to watch
+        "resume_summary": (
+            "Software engineer with full-stack and backend experience. "
+            "Python, TypeScript, Firebase, React Native. "
+            "Targeting SDE-2 / Software Engineer II roles at FAANG in Seattle."
+        ),
+        "target_roles": [
+            "Software Engineer II",
+            "SDE-2", "SDE 2",
+            "Senior Software Engineer",
+            "Software Developer II",
+            "Backend Engineer",
+            "Full Stack Engineer",
+        ],
+        "exclude_keywords": [
+            "intern", "internship", "junior", "staff", "principal",
+            "director", "manager", "lead",
+        ],
         "companies": {
-
-            # BIG TECH
-            "Amazon / AWS": {
-                "type": "indeed",
-                "query": "amazon+software+development+engineer+II",
-            },
-            "Microsoft": {
-                "type": "indeed",
-                "query": "microsoft+software+engineer+II+SDE",
-            },
-            "Google": {
-                "type": "indeed",
-                "query": "google+software+engineer+L4",
-            },
-            "Meta": {
-                "type": "indeed",
-                "query": "meta+software+engineer+E4+E5",
-            },
-            "Apple": {
-                "type": "indeed",
-                "query": "apple+software+engineer+ICT3",
-            },
-            "LinkedIn": {
-                "type": "indeed",
-                "query": "linkedin+software+engineer+II",
-            },
-
-            # GREENHOUSE ATS
-            "Airbnb":      {"type": "greenhouse", "slug": "airbnb"},
-            "Stripe":      {"type": "greenhouse", "slug": "stripe"},
-            "Lyft":        {"type": "greenhouse", "slug": "lyft"},
-            "Shopify":     {"type": "greenhouse", "slug": "shopify"},
-            "Figma":       {"type": "greenhouse", "slug": "figma"},
-            "Notion":      {"type": "greenhouse", "slug": "notion"},
-            "Discord":     {"type": "greenhouse", "slug": "discord"},
-            "Coinbase":    {"type": "greenhouse", "slug": "coinbase"},
-            "DoorDash":    {"type": "greenhouse", "slug": "doordash"},
-            "Databricks":  {"type": "greenhouse", "slug": "databricks"},
-            "Snowflake":   {"type": "greenhouse", "slug": "snowflake"},
-            "Salesforce":  {"type": "greenhouse", "slug": "salesforce"},
-            "Atlassian":   {"type": "greenhouse", "slug": "atlassian"},
-            "Dropbox":     {"type": "greenhouse", "slug": "dropbox"},
-
-            # LEVER ATS
-            "Netflix":   {"type": "lever", "slug": "netflix"},
-            "Uber":      {"type": "lever", "slug": "uber"},
-            "Zillow":    {"type": "lever", "slug": "zillow"},
-            "Expedia":   {"type": "lever", "slug": "expedia"},
-            "Palantir":  {"type": "lever", "slug": "palantir"},
+            # ── Greenhouse ───────────────────────────────────────────────────
+            "Stripe":       {"type": "greenhouse", "slug": "stripe"},
+            "Airbnb":       {"type": "greenhouse", "slug": "airbnb"},
+            "DoorDash":     {"type": "greenhouse", "slug": "doordash"},
+            "Lyft":         {"type": "greenhouse", "slug": "lyft"},
+            "Coinbase":     {"type": "greenhouse", "slug": "coinbase"},
+            "Cloudflare":   {"type": "greenhouse", "slug": "cloudflare"},
+            "Datadog":      {"type": "greenhouse", "slug": "datadog"},
+            # ── Lever ────────────────────────────────────────────────────────
+            "Scale AI":     {"type": "lever", "slug": "scaleai"},
+            "Rippling":     {"type": "lever", "slug": "rippling"},
+            # ── Indeed fallback ──────────────────────────────────────────────
+            "Amazon":       {"type": "indeed", "query": "amazon+software+engineer+II"},
+            "Microsoft":    {"type": "indeed", "query": "microsoft+software+engineer+2"},
+            "Google":       {"type": "indeed", "query": "google+software+engineer+II"},
+            "Meta":         {"type": "indeed", "query": "meta+software+engineer+E4"},
+            "Apple":        {"type": "indeed", "query": "apple+software+engineer+ICT3"},
+            "Uber":         {"type": "indeed", "query": "uber+software+engineer+II"},
+            # ── LinkedIn ─────────────────────────────────────────────────────
+            "Amazon (LinkedIn)":   {"type": "linkedin", "query": "Amazon+Software+Engineer+II"},
+            "Microsoft (LinkedIn)":{"type": "linkedin", "query": "Microsoft+Software+Engineer+2"},
         },
     },
-
 }
-
-# ── SHARED SETTINGS ──────────────────────────────────────────────────────────
-
-LOCATION        = "Seattle, WA"
-LOCATION_INDEED = "Seattle%2C+WA"   # URL-encoded for Indeed RSS
-REMOTE_OK       = True              # Also surface remote-friendly jobs
-
-# Gmail sender account — both profiles send FROM this one address
-# Set GMAIL_USER + GMAIL_APP_PASSWORD in GitHub repo secrets
-NOTIFY_GMAIL    = True
-
-# Telegram — optional, one bot broadcasts all profiles' alerts to one chat
-NOTIFY_TELEGRAM = False             # Flip to True + add secrets to enable
-
-MAX_JOBS_PER_RUN  = 50    # Safety cap per profile per run
-JOBS_AGE_DAYS     = 3     # Only surface jobs posted in the last N days (Indeed)
-SEND_EMPTY_DIGEST = False  # Send email even when 0 new jobs found
-
-SEEN_JOBS_FILE = "seen_jobs.json"
-MAX_SEEN_JOBS  = 10000    # Trim oldest entries beyond this (across all profiles)
