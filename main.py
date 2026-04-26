@@ -603,14 +603,15 @@ def run_profile(profile_name: str, profile: dict, seen_for_profile: set) -> set:
             log.error(f"  Unhandled error [{company}]: {e}")
         time.sleep(0.3)
 
-    # Fetch from Jobicy once per profile (not per company)
-    for query in profile.get("jobicy_queries", []):
+    # Fetch from Jobicy — rate limited to first query only (429 protection)
+    jobicy_queries = profile.get("jobicy_queries", [])
+    if jobicy_queries:
         try:
-            jobicy_jobs = fetch_with_retry(fetch_jobicy, query, profile)
+            jobicy_jobs = fetch_with_retry(fetch_jobicy, jobicy_queries[0], profile)
             all_jobs.extend(jobicy_jobs)
         except Exception as e:
             log.error(f"  Jobicy error: {e}")
-        time.sleep(1.0)
+        time.sleep(3.0)  # respect rate limit
 
     log.info(f"  Total fetched: {len(all_jobs)}")
 

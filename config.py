@@ -136,19 +136,19 @@ PROFILES = {
             # ── AI Labs (Greenhouse) ──────────────────────────────────────────
             "Anthropic":    {"type": "greenhouse", "slug": "anthropic"},
             "Databricks":   {"type": "greenhouse", "slug": "databricks"},
-            "Snowflake":    {"type": "greenhouse", "slug": "snowflake"},
+            "Snowflake":    {"type": "indeed", "query": "snowflake+product+manager"},
             "HubSpot":      {"type": "greenhouse", "slug": "hubspot"},
             "Duolingo":     {"type": "greenhouse", "slug": "duolingo"},
             "MongoDB":      {"type": "greenhouse", "slug": "mongodb"},
-            "CrowdStrike":  {"type": "greenhouse", "slug": "crowdstrike"},
-            "Confluent":    {"type": "greenhouse", "slug": "confluent"},
-            "Palo Alto":    {"type": "greenhouse", "slug": "paloaltonetworks"},
-            "ServiceNow":   {"type": "greenhouse", "slug": "servicenow"},
-            "Workday":      {"type": "greenhouse", "slug": "workday"},
+            "CrowdStrike":  {"type": "indeed", "query": "crowdstrike+product+manager"},
+            "Confluent":    {"type": "indeed", "query": "confluent+product+manager"},
+            "Palo Alto":    {"type": "indeed", "query": "paloalto+product+manager"},
+            "ServiceNow":   {"type": "indeed", "query": "servicenow+product+manager"},
+            "Workday":      {"type": "indeed", "query": "workday+product+manager"},
 
             # ── AI Labs (Lever) ───────────────────────────────────────────────
             "Palantir":     {"type": "lever", "slug": "palantir"},
-            "SpaceX":       {"type": "lever", "slug": "spacex"},
+            "SpaceX":       {"type": "lever", "slug": "spacex-2"},
 
             # ── Big Tech / Enterprise (Indeed fallback) ───────────────────────
             "OpenAI":       {"type": "indeed", "query": "openai+product+manager"},
@@ -220,16 +220,16 @@ PROFILES = {
             # ── AI Labs / Top Tech (Greenhouse) ──────────────────────────────
             "Anthropic":    {"type": "greenhouse", "slug": "anthropic"},
             "Databricks":   {"type": "greenhouse", "slug": "databricks"},
-            "Snowflake":    {"type": "greenhouse", "slug": "snowflake"},
+            "Snowflake":    {"type": "indeed", "query": "snowflake+product+manager"},
             "MongoDB":      {"type": "greenhouse", "slug": "mongodb"},
-            "CrowdStrike":  {"type": "greenhouse", "slug": "crowdstrike"},
-            "Confluent":    {"type": "greenhouse", "slug": "confluent"},
-            "Palo Alto":    {"type": "greenhouse", "slug": "paloaltonetworks"},
-            "ServiceNow":   {"type": "greenhouse", "slug": "servicenow"},
+            "CrowdStrike":  {"type": "indeed", "query": "crowdstrike+product+manager"},
+            "Confluent":    {"type": "indeed", "query": "confluent+product+manager"},
+            "Palo Alto":    {"type": "indeed", "query": "paloalto+product+manager"},
+            "ServiceNow":   {"type": "indeed", "query": "servicenow+product+manager"},
 
             # ── Lever ─────────────────────────────────────────────────────────
             "Palantir":     {"type": "lever", "slug": "palantir"},
-            "SpaceX":       {"type": "lever", "slug": "spacex"},
+            "SpaceX":       {"type": "lever", "slug": "spacex-2"},
 
             # ── Indeed fallback ───────────────────────────────────────────────
             "OpenAI":       {"type": "indeed", "query": "openai+software+engineer"},
