@@ -335,6 +335,7 @@ def fetch_linkedin(company: str, query: str, profile: dict) -> list[dict]:
 def _build_html(jobs: list[dict], profile_label: str, subject_prefix: str = "New") -> str:
     rows = ""
     for j in jobs:
+        j = {k: v.replace('\xa0', ' ').strip() if isinstance(v, str) else v for k, v in j.items()}
         score_badge = ""
         if j.get("score") is not None:
             color = "#22c55e" if j["score"] >= 8 else "#f59e0b"
@@ -396,8 +397,8 @@ def send_email(jobs: list[dict], to_addr: str, profile_label: str, subject_prefi
     msg["From"]    = user
     msg["To"]      = to_addr
     plain = "\n".join(f"• {j['title']} @ {j['company']} — {j['url']}" for j in jobs)
-    msg.attach(MIMEText(plain, "plain"))
-    msg.attach(MIMEText(_build_html(jobs, profile_label, subject_prefix), "html"))
+    msg.attach(MIMEText(plain, "plain", "utf-8"))
+    msg.attach(MIMEText(_build_html(jobs, profile_label, subject_prefix), "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
