@@ -144,14 +144,27 @@ def matches_role(title: str, profile: dict) -> bool:
 
 
 def _loc_ok(location: str) -> bool:
+    """All sources — US only, no city restriction."""
+    return _loc_us(location)
+
+
+def _loc_us(location: str) -> bool:
+    """Broad filter — any US location passes. Used for Greenhouse and Lever."""
     if not location:
         return True
     loc = location.lower()
-    if config.LOCATION.lower() in loc:
-        return True
-    if config.REMOTE_OK and "remote" in loc:
-        return True
-    return False
+    # Explicit non-US countries — reject these
+    non_us = [
+        "canada", "united kingdom", "uk", "london", "toronto", "vancouver",
+        "berlin", "germany", "paris", "france", "amsterdam", "netherlands",
+        "dublin", "ireland", "sydney", "australia", "singapore", "india",
+        "bangalore", "mumbai", "brazil", "mexico", "japan", "tokyo",
+        "china", "beijing", "shanghai", "poland", "romania", "spain",
+        "italy", "sweden", "norway", "denmark", "portugal", "israel",
+    ]
+    if any(country in loc for country in non_us):
+        return False
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -178,10 +191,15 @@ Company: {job['company']}
 Location: {job['location']}
 
 Scoring guide:
-9-10 = Perfect match (title + seniority + domain all align)
+9-10 = Perfect match (title + seniority + domain all align, company known to sponsor visas)
 7-8  = Strong match (title matches, minor differences)
 5-6  = Partial match (related role but not ideal)
-1-4  = Poor match (wrong level, domain, or role type)
+1-4  = Poor match (wrong level, domain, role type, or requires US citizenship/clearance)
+
+Important: If the candidate needs visa sponsorship (F1/OPT or H1B transfer) and the job
+explicitly requires US citizenship, security clearance, or states no sponsorship,
+score it 1-2. Large tech companies (FAANG, Microsoft, Google, etc.) generally sponsor visas.
+Defense contractors (Raytheon, Lockheed, Booz Allen) generally do not.
 
 Reply with ONLY a single integer between 1 and 10. No explanation."""
 
@@ -204,6 +222,66 @@ Reply with ONLY a single integer between 1 and 10. No explanation."""
 # FETCHERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _salary_too_low(text: str) -> bool:
+    """
+    Returns True if the text explicitly mentions a salary BELOW the threshold.
+    Only drops jobs that clearly state a low salary — never drops ambiguous ones.
+    """
+    import re
+    # Find salary patterns like $80,000 $95k $85K
+    matches = re.findall(r'\$(\d+)[,.]?(\d*)[kK]?', text)
+    for major, minor in matches:
+        try:
+            amount = int(major.replace(',', ''))
+            if minor:
+                amount = int(f"{major}{minor}".replace(',', ''))
+            # Normalize: $110 means $110 (already in thousands if < 1000)
+            if amount < 1000:
+                amount *= 1000
+            if amount < config.MIN_SALARY_USD:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def fetch_jobicy(role_query: str, profile: dict) -> list[dict]:
+    """
+    Fetches US remote/hybrid jobs from Jobicy free public API.
+    Docs: https://jobicy.com/api/v2/remote-jobs
+    """
+    url = (
+        f"https://jobicy.com/api/v2/remote-jobs"
+        f"?count=50"
+        f"&geo=usa"
+        f"&industry=management"
+        f"&tag={role_query}"
+    )
+    jobs = []
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        for job in resp.json().get("jobs", []):
+            title = job.get("jobTitle", "")
+            if not matches_role(title, profile):
+                continue
+            location = job.get("jobGeo", "USA")
+            jobs.append({
+                "id": str(job.get("id", "")),
+                "title": title,
+                "company": job.get("companyName", ""),
+                "location": location,
+                "url": job.get("url", ""),
+                "source": "Jobicy",
+                "posted": job.get("pubDate", "")[:10],
+                "score": None,
+            })
+        log.info(f"  Jobicy     | {role_query:<25} | {len(jobs):>3} matched")
+    except Exception as e:
+        log.warning(f"  Jobicy fetch failed: {e}")
+    return jobs
+
+
 def fetch_indeed(company: str, query: str, profile: dict) -> list[dict]:
     url = (
         f"https://www.indeed.com/rss"
@@ -211,6 +289,7 @@ def fetch_indeed(company: str, query: str, profile: dict) -> list[dict]:
         f"&l={config.LOCATION_INDEED}"
         f"&sort=date"
         f"&fromage={config.JOBS_AGE_DAYS}"
+        f"&salaryType={config.INDEED_MIN_SALARY}"
     )
     jobs = []
     feed = feedparser.parse(url)
@@ -218,11 +297,15 @@ def fetch_indeed(company: str, query: str, profile: dict) -> list[dict]:
         title = entry.get("title", "")
         if not matches_role(title, profile):
             continue
+        # Backup salary filter — drop jobs explicitly listing salary below threshold
+        summary = entry.get("summary", "") + title
+        if _salary_too_low(summary):
+            continue
         jobs.append({
             "id": entry.get("id") or entry.get("link"),
             "title": title,
             "company": company,
-            "location": entry.get("location", config.LOCATION),
+            "location": entry.get("location", "USA"),
             "url": entry.get("link", ""),
             "source": "Indeed",
             "posted": entry.get("published", ""),
@@ -242,13 +325,13 @@ def fetch_greenhouse(company: str, slug: str, profile: dict) -> list[dict]:
         if not matches_role(title, profile):
             continue
         location = job.get("location", {}).get("name", "")
-        if not _loc_ok(location):
+        if not _loc_us(location):
             continue
         jobs.append({
             "id": str(job.get("id")),
             "title": title,
             "company": company,
-            "location": location or config.LOCATION,
+            "location": location or "USA",
             "url": job.get("absolute_url", ""),
             "source": "Greenhouse",
             "posted": job.get("updated_at", "")[:10],
@@ -268,7 +351,7 @@ def fetch_lever(company: str, slug: str, profile: dict) -> list[dict]:
         if not matches_role(title, profile):
             continue
         location = job.get("categories", {}).get("location", "")
-        if not _loc_ok(location):
+        if not _loc_us(location):
             continue
         ts = job.get("createdAt", 0)
         posted = (
@@ -279,7 +362,7 @@ def fetch_lever(company: str, slug: str, profile: dict) -> list[dict]:
             "id": job.get("id", ""),
             "title": title,
             "company": company,
-            "location": location or config.LOCATION,
+            "location": location or "USA",
             "url": job.get("hostedUrl", ""),
             "source": "Lever",
             "posted": posted,
@@ -415,10 +498,12 @@ def send_email(jobs: list[dict], to_addr: str, profile_label: str, subject_prefi
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
             srv.login(user, password)
-            srv.send_message(msg)   # handles Unicode encoding correctly
+            srv.send_message(msg)
         log.info(f"  Email sent → {to_addr}")
     except Exception as e:
+        import traceback
         log.error(f"  Gmail failed → {to_addr}: {e}")
+        log.error(f"  Traceback:\n{traceback.format_exc()}")
 
 
 def send_telegram(jobs: list[dict], profile_label: str) -> None:
@@ -517,6 +602,15 @@ def run_profile(profile_name: str, profile: dict, seen_for_profile: set) -> set:
         except Exception as e:
             log.error(f"  Unhandled error [{company}]: {e}")
         time.sleep(0.3)
+
+    # Fetch from Jobicy once per profile (not per company)
+    for query in profile.get("jobicy_queries", []):
+        try:
+            jobicy_jobs = fetch_with_retry(fetch_jobicy, query, profile)
+            all_jobs.extend(jobicy_jobs)
+        except Exception as e:
+            log.error(f"  Jobicy error: {e}")
+        time.sleep(1.0)
 
     log.info(f"  Total fetched: {len(all_jobs)}")
 

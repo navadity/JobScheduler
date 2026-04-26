@@ -3,7 +3,7 @@ name: Job Alert Bot v2
 on:
   schedule:
     # Hourly alerts — runs every hour at :00 UTC
-    - cron: '0 * * * *'
+    - cron: '0 */8 * * *'
     # Weekly digest — every Sunday at 9:00 AM UTC (2am PST)
     - cron: '0 9 * * 0'
   # Lets you trigger manually from the Actions tab
@@ -22,7 +22,7 @@ jobs:
   fetch-jobs:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to commit seen_jobs.json fallback
+      contents: read    # write only needed if not using Gist
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ jobs:
           GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
           GEMINI_API_KEY:      ${{ secrets.GEMINI_API_KEY }}
           GIST_ID:             ${{ secrets.GIST_ID }}
-          GITHUB_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:            ${{ secrets.GH_TOKEN }}
         run: python main.py
 
       # ── 5. Run weekly digest ─────────────────────────────────────────────
@@ -62,11 +62,14 @@ jobs:
           GMAIL_USER:          ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
           GIST_ID:             ${{ secrets.GIST_ID }}
-          GITHUB_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:            ${{ secrets.GH_TOKEN }}
         run: python main.py --weekly-digest
 
-      # ── 6. Commit seen_jobs.json fallback (if Gist not configured) ───────
-      - name: Commit seen_jobs.json (local fallback)
+      # ── 6. Commit seen_jobs.json — only if Gist is NOT configured ──────
+      - name: Commit seen_jobs.json (local fallback only)
+        if: env.GIST_ID == ''
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
