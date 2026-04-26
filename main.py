@@ -393,22 +393,29 @@ def send_email(jobs: list[dict], to_addr: str, profile_label: str, subject_prefi
         log.warning("Gmail: GMAIL_USER or GMAIL_APP_PASSWORD not set — skipping.")
         return
 
+    location = _sanitize(config.LOCATION)
+    label    = _sanitize(profile_label)
+    prefix   = _sanitize(subject_prefix)
+
     subject = (
-        f"[Job Alert | {profile_label}] "
-        f"{len(jobs)} {subject_prefix.lower()} role{'s' if len(jobs) != 1 else ''} in {config.LOCATION}"
+        f"[Job Alert | {label}] "
+        f"{len(jobs)} {prefix.lower()} role{'s' if len(jobs) != 1 else ''} in {location}"
     )
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = user
     msg["To"]      = to_addr
-    plain = "\n".join(f"• {j['title']} @ {j['company']} — {j['url']}" for j in jobs)
+    plain = "\n".join(
+        f"- {_sanitize(j['title'])} @ {_sanitize(j['company'])} -- {j['url']}"
+        for j in jobs
+    )
     msg.attach(MIMEText(plain, "plain", "utf-8"))
     msg.attach(MIMEText(_build_html(jobs, profile_label, subject_prefix), "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
             srv.login(user, password)
-            srv.sendmail(user, to_addr, msg.as_string())
+            srv.send_message(msg)   # handles Unicode encoding correctly
         log.info(f"  Email sent → {to_addr}")
     except Exception as e:
         log.error(f"  Gmail failed → {to_addr}: {e}")

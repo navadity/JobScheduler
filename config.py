@@ -9,7 +9,7 @@ import os
 # ── Location ──────────────────────────────────────────────────────────────────
 LOCATION        = "Seattle, WA"
 LOCATION_INDEED = "Seattle%2C+WA"
-REMOTE_OK       = True
+REMOTE_OK       = False
 JOBS_AGE_DAYS   = 3
 
 # ── Dedup / Storage ───────────────────────────────────────────────────────────
