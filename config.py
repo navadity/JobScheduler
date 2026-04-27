@@ -45,6 +45,7 @@ TARGET_CITIES = [
 SEEN_JOBS_FILE  = "seen_jobs.json"
 MAX_SEEN_JOBS   = 5000      # per profile, older IDs are trimmed
 MAX_JOBS_PER_RUN = 50       # cap alerts per run to avoid spam
+JOBSPY_RESULTS_PER_SEARCH = 30  # results per JobSpy query (LinkedIn/Glassdoor/ZipRecruiter)
 
 # Use GitHub Gist for persistent dedup storage (survives git resets)
 USE_GIST_STORAGE = True
@@ -96,6 +97,10 @@ PROFILES = {
         "jobicy_queries": [
             "product+manager",
             "senior+product+manager",
+        ],
+        "jobspy_queries": [
+            "Senior Product Manager",
+            "Group Product Manager",
         ],
         "companies": {
             # ── Greenhouse ───────────────────────────────────────────────────
@@ -193,6 +198,10 @@ PROFILES = {
         "jobicy_queries": [
             "software+engineer",
             "backend+engineer",
+        ],
+        "jobspy_queries": [
+            "Software Engineer II",
+            "Senior Software Engineer",
         ],
         "companies": {
             # ── Greenhouse ───────────────────────────────────────────────────

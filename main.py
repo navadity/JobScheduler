@@ -372,43 +372,63 @@ def fetch_lever(company: str, slug: str, profile: dict) -> list[dict]:
     return jobs
 
 
-# ── 4. LinkedIn RSS fetcher ───────────────────────────────────────────────────
+# ── 4. JobSpy — LinkedIn, Glassdoor, ZipRecruiter, Google Jobs ───────────────
 
-def fetch_linkedin(company: str, query: str, profile: dict) -> list[dict]:
+def fetch_jobspy(search_term: str, profile: dict, sites: list = None) -> list[dict]:
     """
-    Fetches LinkedIn jobs via their public RSS feed.
-    f_TPR=r86400 = posted in last 24 hours.
+    Uses python-jobspy to scrape LinkedIn, Indeed, Glassdoor, ZipRecruiter.
+    Free, no API key needed. Used instead of broken LinkedIn RSS.
     """
-    encoded_location = config.LOCATION.replace(", ", "%2C+").replace(" ", "+")
-    url = (
-        f"https://www.linkedin.com/jobs/search/?keywords={query}"
-        f"&location={encoded_location}"
-        f"&f_TPR=r86400"
-        f"&sortBy=DD"
-        f"&format=rss"
-    )
-    jobs = []
+    if sites is None:
+        sites = ["linkedin", "glassdoor", "zip_recruiter"]
     try:
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
-            title = entry.get("title", "")
+        from jobspy import scrape_jobs
+        df = scrape_jobs(
+            site_name=sites,
+            search_term=search_term,
+            location="United States",
+            results_wanted=config.JOBSPY_RESULTS_PER_SEARCH,
+            hours_old=config.JOBS_AGE_DAYS * 24,
+            country_indeed="USA",
+            linkedin_fetch_description=False,  # faster without full description
+            verbose=0,
+        )
+        jobs = []
+        for _, row in df.iterrows():
+            title = str(row.get("title", "") or "")
             if not matches_role(title, profile):
                 continue
+            location = str(row.get("location", "") or "USA")
+            if not _loc_us(location):
+                continue
+            company  = str(row.get("company", "") or "")
+            url      = str(row.get("job_url", "") or "")
+            source   = str(row.get("site", "") or "JobSpy").title()
+            posted   = str(row.get("date_posted", "") or "")[:10]
+            job_id   = str(row.get("id", "") or url)
             jobs.append({
-                "id": entry.get("id") or entry.get("link"),
+                "id": job_id,
                 "title": title,
                 "company": company,
-                "location": entry.get("urn_li_jobPosting_location", config.LOCATION),
-                "url": entry.get("link", ""),
-                "source": "LinkedIn",
-                "posted": entry.get("published", ""),
+                "location": location,
+                "url": url,
+                "source": source,
+                "posted": posted,
                 "score": None,
             })
-        log.info(f"  LinkedIn   | {company:<25} | {len(jobs):>3} matched")
+        log.info(f"  JobSpy     | {search_term:<25} | {len(jobs):>3} matched ({', '.join(sites)})")
+        return jobs
+    except ImportError:
+        log.error("  JobSpy not installed — run: pip install python-jobspy")
+        return []
     except Exception as e:
-        log.warning(f"  LinkedIn   | {company:<25} | ERROR: {e}")
-    time.sleep(1.0)   # LinkedIn is rate-sensitive
-    return jobs
+        log.warning(f"  JobSpy     | {search_term:<25} | ERROR: {e}")
+        return []
+
+
+# Keep fetch_linkedin as a no-op stub so config entries don't crash
+def fetch_linkedin(company: str, query: str, profile: dict) -> list[dict]:
+    return []  # Replaced by fetch_jobspy
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -612,6 +632,15 @@ def run_profile(profile_name: str, profile: dict, seen_for_profile: set) -> set:
         except Exception as e:
             log.error(f"  Jobicy error: {e}")
         time.sleep(3.0)  # respect rate limit
+
+    # Fetch from JobSpy — LinkedIn, Glassdoor, ZipRecruiter (free, no API key)
+    for query in profile.get("jobspy_queries", []):
+        try:
+            spy_jobs = fetch_jobspy(query, profile)
+            all_jobs.extend(spy_jobs)
+        except Exception as e:
+            log.error(f"  JobSpy error: {e}")
+        time.sleep(5.0)  # be polite between searches
 
     log.info(f"  Total fetched: {len(all_jobs)}")
 
