@@ -380,7 +380,7 @@ def fetch_jobspy(search_term: str, profile: dict, sites: list = None) -> list[di
     Free, no API key needed. Used instead of broken LinkedIn RSS.
     """
     if sites is None:
-        sites = ["linkedin", "glassdoor", "zip_recruiter"]
+        sites = ["linkedin"]
     try:
         from jobspy import scrape_jobs
         df = scrape_jobs(

@@ -101,6 +101,8 @@ PROFILES = {
         "jobspy_queries": [
             "Senior Product Manager",
             "Group Product Manager",
+            "Technical Program Manager",
+            "Program Manager",
         ],
         "companies": {
             # ── Greenhouse ───────────────────────────────────────────────────
@@ -153,7 +155,6 @@ PROFILES = {
 
             # ── AI Labs (Lever) ───────────────────────────────────────────────
             "Palantir":     {"type": "lever", "slug": "palantir"},
-            "SpaceX":       {"type": "lever", "slug": "spacex-2"},
 
             # ── Big Tech / Enterprise (Indeed fallback) ───────────────────────
             "OpenAI":       {"type": "indeed", "query": "openai+product+manager"},
@@ -201,6 +202,7 @@ PROFILES = {
         ],
         "jobspy_queries": [
             "Software Engineer II",
+            "Software Engineer 2",
             "Senior Software Engineer",
         ],
         "companies": {
@@ -238,7 +240,6 @@ PROFILES = {
 
             # ── Lever ─────────────────────────────────────────────────────────
             "Palantir":     {"type": "lever", "slug": "palantir"},
-            "SpaceX":       {"type": "lever", "slug": "spacex-2"},
 
             # ── Indeed fallback ───────────────────────────────────────────────
             "OpenAI":       {"type": "indeed", "query": "openai+software+engineer"},
